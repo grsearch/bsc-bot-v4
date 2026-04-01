@@ -73,7 +73,7 @@ async function main() {
   const security   = new SecurityChecker();
   const executor   = new TradeExecutor(wallet, C);
   const priceWatch = new PriceMonitor(C);
-  const dashboard  = new Dashboard(C.DASHBOARD_PORT);
+  const dashboard  = new Dashboard(C.DASHBOARD_PORT, C.BUY_AMOUNT_BNB);
 
   dashboard.start();
 
@@ -179,6 +179,7 @@ async function main() {
       dashboard.addTrade({
         symbol: pos.symbol, side: "SELL", price: pos.currentPrice, pnl,
         txHash: result.txHash, time: Date.now(), reason,
+        bnbAmount: pos.bnbAmount,
       });
       logger.success(`  SOLD ${pos.symbol} | ${reason} | PnL: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}% | tx: ${result.txHash}`);
       positions.delete(tokenAddr);
@@ -263,6 +264,103 @@ async function main() {
   sniper.start();
 
   setInterval(monitorPrices, C.POLL_INTERVAL);
+
+  // ════════════════════════════════════════
+  // 定时调度: 北京时间 23:30 停止扫描, 07:00 恢复
+  // 注意: 休眠期间只暂停链上扫描(不接新单)
+  //       价格监控和已有持仓的止损/止盈继续运行
+  // ════════════════════════════════════════
+  let sniperPaused = false;
+
+  /**
+   * 获取当前北京时间的小时和分钟
+   */
+  function getBeijingHM() {
+    const now = new Date();
+    // UTC+8
+    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+    const beijing = new Date(utc + 8 * 3600000);
+    return { h: beijing.getHours(), m: beijing.getMinutes() };
+  }
+
+  /**
+   * 判断当前是否在休眠时段 (23:30 ~ 07:00 北京时间)
+   */
+  function isInSleepWindow() {
+    const { h, m } = getBeijingHM();
+    const t = h * 60 + m; // 当前分钟数
+    // 23:30 = 1410, 07:00 = 420
+    // 休眠区间: [1410, 1440) 跨午夜 [0, 420)
+    return t >= 1410 || t < 420;
+  }
+
+  /**
+   * 计算到下一个切换时间点的毫秒数
+   */
+  function msToNext(targetH, targetM) {
+    const now = new Date();
+    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+    const beijing = new Date(utc + 8 * 3600000);
+
+    let target = new Date(beijing);
+    target.setHours(targetH, targetM, 0, 0);
+
+    // 如果目标时间已过，则推到明天
+    if (target <= beijing) {
+      target.setDate(target.getDate() + 1);
+    }
+
+    // 转回 UTC 差值
+    return target.getTime() - beijing.getTime();
+  }
+
+  function scheduleSleep() {
+    const ms = msToNext(23, 30);
+    const hrs = (ms / 3600000).toFixed(1);
+    logger.info(`⏰ Schedule: will PAUSE scanning at 23:30 Beijing time (in ${hrs}h)`);
+
+    setTimeout(() => {
+      if (!sniperPaused) {
+        sniperPaused = true;
+        sniper.stop();
+        logger.info("🌙 23:30 Beijing — Sniper PAUSED (price monitor still active)");
+        dashboard.state.sniperStatus = "PAUSED (23:30-07:00)";
+      }
+      scheduleWake();
+    }, ms);
+  }
+
+  function scheduleWake() {
+    const ms = msToNext(7, 0);
+    const hrs = (ms / 3600000).toFixed(1);
+    logger.info(`⏰ Schedule: will RESUME scanning at 07:00 Beijing time (in ${hrs}h)`);
+
+    setTimeout(() => {
+      if (sniperPaused) {
+        sniperPaused = false;
+        sniper.resume();
+        logger.info("☀️ 07:00 Beijing — Sniper RESUMED");
+        dashboard.state.sniperStatus = "ACTIVE";
+      }
+      scheduleSleep();
+    }, ms);
+  }
+
+  // 启动时判断是否在休眠窗口
+  if (isInSleepWindow()) {
+    const { h, m } = getBeijingHM();
+    logger.info(`⏰ Current Beijing time: ${h}:${String(m).padStart(2, "0")} — in sleep window (23:30~07:00)`);
+    sniperPaused = true;
+    sniper.stop();
+    logger.info("🌙 Sniper PAUSED on startup (sleep window)");
+    dashboard.state.sniperStatus = "PAUSED (23:30-07:00)";
+    scheduleWake();
+  } else {
+    const { h, m } = getBeijingHM();
+    logger.info(`⏰ Current Beijing time: ${h}:${String(m).padStart(2, "0")} — active window`);
+    dashboard.state.sniperStatus = "ACTIVE";
+    scheduleSleep();
+  }
 
   logger.info(`Price poll interval: ${C.POLL_INTERVAL / 1000}s`);
   logger.info("Bot running. Ctrl+C to stop.");

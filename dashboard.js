@@ -1,6 +1,6 @@
 // ============================================================
-// Dashboard Server — HTTP API + WebSocket (v3)
-// 变更: 移除到期时间显示，新增 AI 评估信息
+// Dashboard Server — HTTP API + WebSocket (v4)
+// 变更: 盈利计算使用动态 BUY_AMOUNT_BNB, 价格单位 BNB
 // ============================================================
 
 const http = require("http");
@@ -9,8 +9,9 @@ const path = require("path");
 const { logger } = require("./logger");
 
 class Dashboard {
-  constructor(port) {
+  constructor(port, buyAmountBnb) {
     this.port = port;
+    this.buyAmountBnb = buyAmountBnb || 0.2;
     this.clients = new Set();
     this.state = {
       detectedTokens: [],
@@ -135,7 +136,7 @@ class Dashboard {
     if (trade.side === "SELL" && trade.pnl != null) {
       if (trade.pnl >= 0) this.state.stats.wins++;
       else this.state.stats.losses++;
-      this.state.stats.totalPnlBnb += (trade.pnl / 100) * 0.2;
+      this.state.stats.totalPnlBnb += (trade.pnl / 100) * (trade.bnbAmount || this.buyAmountBnb);
     }
     this._broadcast("trade", trade);
   }
@@ -145,7 +146,7 @@ class Dashboard {
     const up = Math.floor(process.uptime());
     const h = Math.floor(up / 3600);
     const m = Math.floor((up % 3600) / 60);
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Four.meme Sniper v3</title>
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Four.meme Sniper v4</title>
 <meta http-equiv="refresh" content="5">
 <style>
   body{background:#0a0e17;color:#e2e8f0;font-family:'Courier New',monospace;padding:40px;max-width:900px;margin:0 auto}
@@ -162,7 +163,7 @@ class Dashboard {
   a{color:#00e5ff;text-decoration:none}
 </style></head><body>
 <h1>🎯 Four.meme Sniper Bot v4</h1>
-<p class="subtitle">策略: 收录即检测 FDV/LP/Holders 阈值买入 | Uptime: ${h}h ${m}m | <a href="/api/state">API</a></p>
+<p class="subtitle">策略: 收录即检测 FDV/LP/Holders 阈值买入 | Uptime: ${h}h ${m}m | 扫描: <span class="${this.state.sniperStatus === "ACTIVE" ? "green" : "yellow"}">${this.state.sniperStatus || "ACTIVE"}</span> (23:30~07:00 休眠) | <a href="/api/state">API</a></p>
 <div class="grid">
   <div class="card"><div class="label">Detected</div><div class="value cyan">${s.detected}</div></div>
   <div class="card"><div class="label">Qualified</div><div class="value green">${s.qualified}</div></div>
